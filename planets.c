@@ -3,12 +3,15 @@
 #include <GL/glu.h>
 #include "SDL.h"
 
+#include <errno.h>
+#include <libgen.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <sys/select.h>
 #include <sys/sysinfo.h>
@@ -40,8 +43,9 @@
 
 #define PLANET_DENSITY 0.03
 
-#define WORLD_WIDTH 3277.0
-#define WORLD_HEIGHT 2048.0
+#define WORLD_SCALE 0.75
+#define WORLD_WIDTH (3277.0 * WORLD_SCALE)
+#define WORLD_HEIGHT (2048.0 * WORLD_SCALE)
 
 #define FRAMES_PER_SECOND 60
 #define TICKS_PER_FRAME 5
@@ -118,6 +122,8 @@ typedef struct {
 } pthread_list_t;
 
 
+void die_usage(const char *prog);
+size_t parse_ticks(char *spec);
 int initialize_display(void);
 int set_up_pixel_format(void);
 int create_window(const char *window_name, int width, int height, int video_flags);
@@ -177,8 +183,47 @@ void *my_malloc(size_t size);
 
 
 int main(int argc, char **argv) {
-  if (argc != 1) {
-    printf("Usage: %s\n", argv[0]);
+  size_t anim_ticks = 0;
+  const char *anim_dir = NULL;
+  int c;
+  const char *prog_name;
+
+  prog_name = basename(argv[0]);
+
+  while ((c = getopt(argc, argv, "t:d:")) != -1) {
+    switch (c) {
+      case 't':
+        if (anim_ticks > 0) {
+          die_usage(prog_name);
+        }
+        anim_ticks = parse_ticks(optarg);
+        if (anim_ticks == 0) {
+          die_usage(prog_name);
+        }
+        break;
+      case 'd':
+        anim_dir = optarg;
+        if (strlen(anim_dir) == 0) {
+          die_usage(prog_name);
+        }
+        break;
+      default:
+        die_usage(prog_name);
+    }
+  }
+
+  if ((anim_ticks > 0) ^ (anim_dir != NULL)) {
+    fputs("-t and -d must be provided together.\n", stderr);
+    die_usage(prog_name);
+  }
+
+  argv += optind;
+  argc -= optind;
+
+  printf("Anim dir = \"%s\", tick count = %lu\n", anim_dir, anim_ticks);
+
+  if (argc != 0) {
+    die_usage(prog_name);
     return 1;
   }
 
@@ -200,6 +245,63 @@ int main(int argc, char **argv) {
   run_simulation();
 
   return 0;
+}
+
+
+void die_usage(const char *prog) {
+  fprintf(stderr, "Usage: %s [-d <anim_dir> -t <anim_duration>]\n", prog);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Options:\n");
+  fprintf(stderr, "  -d <anim_dir>    Directory to save animation frames in.  It will be created if it does not exist.\n");
+  fprintf(stderr, "  -t <num>[s|m|h]  Duration of animation.  Units are s=seconds, m=minutes, h=hours, or <omitted>=frames.\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "If either -d or -t is given, then the other must be provided as well.\n");
+  fprintf(stderr, "If neither option is provided, then no animation frames are saved.\n");
+
+  exit(1);
+}
+
+
+size_t parse_ticks(char *spec) {
+  char unit;
+  size_t factor = 1;
+  size_t count;
+  char *endptr;
+
+  if (strlen(spec) == 0) {
+    return 0;
+  }
+
+  unit = spec[strlen(spec) - 1];
+  if (unit == 'h') {
+    factor *= 60;
+    unit = 'm';
+  }
+  if (unit == 'm') {
+    factor *= 60;
+    unit = 's';
+  }
+  if (unit == 's') {
+    factor *= FRAMES_PER_SECOND;
+  }
+
+  if (factor > 1) {
+    spec[strlen(spec) - 1] = '\0';
+  }
+
+  count = strtoul(spec, &endptr, 10);
+  if (*endptr || strchr(spec, '-')) {
+    return 0;
+  }
+  if (errno == ERANGE || (size_t) count != count) {
+    fprintf(stderr, "Tick count %s too large!\n", spec);
+    return 0;
+  }
+  if ((count * factor) / factor != count) {
+    fprintf(stderr, "Tick count too large!\n");
+    return 0;
+  }
+  return count * factor;
 }
 
 
