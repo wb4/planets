@@ -40,7 +40,7 @@
 
 #define PLANET_DENSITY 0.03
 
-#define WORLD_WIDTH 2048.0
+#define WORLD_WIDTH 3277.0
 #define WORLD_HEIGHT 2048.0
 
 #define FRAMES_PER_SECOND 60
@@ -54,7 +54,7 @@
 
 /* Stuff dealing with display. */
 
-#define SCREEN_WIDTH_INIT 1050  /* initial screen height is calculated from this and the world dimensions */
+#define SCREEN_WIDTH_INIT 1680  /* initial screen height is calculated from this and the world dimensions */
 #define SCREEN_DEPTH 24 /* color depth */
 
 #define CIRCLE_POLY_COUNT 10
@@ -138,6 +138,7 @@ void color_planet(planet_t *planet);
 void hue_to_rgb(double hue, double *r, double *g, double *b);
 void scale_color(double brightness, double *r, double *g, double *b);
 void draw_circle(double cx, double cy, double radius);
+void draw_rect(double x, double y, double w, double h);
 void tick_planets(thread_arg_t *thread_arg);
 void resolve_collisions(planet_list_t *planets, size_t tick);
 void resolve_collision_group(planet_list_t *planets, planet_list_t *collision, planet_list_t *new_planets, size_t tick);
@@ -189,6 +190,8 @@ int main(int argc, char **argv) {
   }
 
   atexit(SDL_Quit);
+
+  SDL_ShowCursor(SDL_DISABLE);
 
   if (initialize_display() < 0) {
     return 1;
@@ -333,7 +336,7 @@ int initialize_display(void) {
 
   ratio = WORLD_HEIGHT / WORLD_WIDTH;
 
-  screen_height = (int) (ratio * screen_width);
+  screen_height = (int) (ratio * screen_width + 0.5);
 
   if (set_up_pixel_format() < 0) {
     return -1;
@@ -406,9 +409,8 @@ int initialize_openGL(int width, int height) {
 
 
 void size_openGL_screen(int width, int height) {
-  const float game_aspect = (float) (WORLD_WIDTH / WORLD_HEIGHT);
+  const float world_aspect = (float) (WORLD_WIDTH / WORLD_HEIGHT);
   float screen_aspect;
-  const float size = WORLD_WIDTH;
 
   if ( height == 0 ) {
     height = 1;
@@ -421,10 +423,10 @@ void size_openGL_screen(int width, int height) {
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
 
-  if (screen_aspect > game_aspect) {
-    glScalef(2.0f/(size*screen_aspect), 2.0f/size, 1.0f);
+  if (screen_aspect > world_aspect) {
+    glScalef(2.0f/(WORLD_HEIGHT*screen_aspect), 2.0f/WORLD_HEIGHT, 1.0f);
   } else {
-    glScalef (2.0f/size, 2.0f/(size/screen_aspect), 1.0f);
+    glScalef (2.0f/WORLD_WIDTH, 2.0f/(WORLD_WIDTH/screen_aspect), 1.0f);
   }
   glTranslatef(-WORLD_WIDTH/2.0f, -WORLD_HEIGHT/2.0f, 0.0f);
 }
@@ -481,7 +483,7 @@ void draw_planet(planet_t *planet) {
     if (planet->y_pos - planet->radius < 0.0) {
       draw_circle(planet->x_pos + WORLD_WIDTH, planet->y_pos + WORLD_HEIGHT, planet->radius);
     }
-    if (planet->y_pos + planet->radius >= 0.0) {
+    if (planet->y_pos + planet->radius >= WORLD_HEIGHT) {
       draw_circle(planet->x_pos + WORLD_WIDTH, planet->y_pos - WORLD_HEIGHT, planet->radius);
     }
   }
@@ -490,14 +492,14 @@ void draw_planet(planet_t *planet) {
     if (planet->y_pos - planet->radius < 0.0) {
       draw_circle(planet->x_pos - WORLD_WIDTH, planet->y_pos + WORLD_HEIGHT, planet->radius);
     }
-    if (planet->y_pos + planet->radius >= 0.0) {
+    if (planet->y_pos + planet->radius >= WORLD_HEIGHT) {
       draw_circle(planet->x_pos - WORLD_WIDTH, planet->y_pos - WORLD_HEIGHT, planet->radius);
     }
   }
   if (planet->y_pos - planet->radius < 0.0) {
     draw_circle(planet->x_pos, planet->y_pos + WORLD_HEIGHT, planet->radius);
   }
-  if (planet->y_pos + planet->radius >= 0.0) {
+  if (planet->y_pos + planet->radius >= WORLD_HEIGHT) {
     draw_circle(planet->x_pos, planet->y_pos - WORLD_HEIGHT, planet->radius);
   }
 }
@@ -593,6 +595,16 @@ void draw_circle(double cx, double cy, double radius) {
       y = (float) (cy + radius * sin(angle));
       glVertex2f(x, y);
     }
+  glEnd();
+}
+
+
+void draw_rect(double x, double y, double w, double h) {
+  glBegin(GL_QUADS);
+    glVertex2f(x, y);
+    glVertex2f(x+w, y);
+    glVertex2f(x+w, y+h);
+    glVertex2f(x, y+h);
   glEnd();
 }
 
