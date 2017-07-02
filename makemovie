@@ -12,6 +12,13 @@ if ! [ -d "$DIR" ]; then
   exit 1
 fi
 
+TESTFILE=$(ls "$DIR"/frame*.png 2> /dev/null | head -1)
+if ! [ -f "$TESTFILE" ]; then
+  echo No frames in \""$DIR\"".
+  exit 1
+fi
+DIGITS=$(expr ${#TESTFILE} - ${#DIR} - 10)
+
 ENCODERS=(ffmpeg avconv)
 
 for enc in ${ENCODERS[*]}; do
@@ -25,8 +32,5 @@ if [ -z $ENCODER ]; then
   echo "No encoders found.  I need at least one of the following:" ${ENCODERS[*]} > /dev/stderr
   exit 1
 fi
-
-NAME=$(ls "$DIR"/frame*.png | head -1)
-DIGITS=$(expr ${#NAME} - ${#DIR} - 10)
 
 $ENCODER -framerate 60 -i "$DIR"/frame%0${DIGITS}d.png -c:v libx264 -profile:v high -crf 20 -pix_fmt yuv420p "$DIR"/movie.mp4
