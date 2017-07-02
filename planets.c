@@ -1,6 +1,8 @@
 
 #include <GL/gl.h>
 #include <GL/glu.h>
+#include <png.h>
+#include <zlib.h>
 #include "SDL.h"
 
 #include <errno.h>
@@ -14,8 +16,10 @@
 #include <unistd.h>
 
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
+#include <sys/types.h>
 
 
 /* #define USE_PLANET_MUTEX */
@@ -122,14 +126,23 @@ typedef struct {
 } pthread_list_t;
 
 
+typedef struct {
+  const char *dir;
+  size_t frame_count;
+} anim_spec_t;
+
+
 void die_usage(const char *prog);
-size_t parse_ticks(char *spec);
+size_t parse_frames(char *spec);
+int prepare_anim_dir(anim_spec_t anim);
+int file_exists(const char *path);
 int initialize_display(void);
+void screen_size(int *w, int *h);
 int set_up_pixel_format(void);
 int create_window(const char *window_name, int width, int height, int video_flags);
 int initialize_openGL(int width, int height);
 void size_openGL_screen(int width, int height);
-void run_simulation(void);
+void run_simulation(anim_spec_t anim);
 void start_threads(pthread_list_t *threads, thread_arg_t *arg);
 void stop_threads(pthread_list_t *threads, thread_arg_t *arg);
 void pthread_list_init(pthread_list_t *list, size_t size);
@@ -145,6 +158,11 @@ void hue_to_rgb(double hue, double *r, double *g, double *b);
 void scale_color(double brightness, double *r, double *g, double *b);
 void draw_circle(double cx, double cy, double radius);
 void draw_rect(double x, double y, double w, double h);
+int write_anim_frame(anim_spec_t anim, size_t frame_num);
+int anim_frame_pathname(char *dest, size_t size, size_t num, anim_spec_t anim);
+int dump_screen_PNG(const char *path, int width, int height);
+size_t digit_count(size_t num);
+int write_PNG(const char *path, char *pixels_rgb, int width, int height);
 void tick_planets(thread_arg_t *thread_arg);
 void resolve_collisions(planet_list_t *planets, size_t tick);
 void resolve_collision_group(planet_list_t *planets, planet_list_t *collision, planet_list_t *new_planets, size_t tick);
@@ -183,8 +201,7 @@ void *my_malloc(size_t size);
 
 
 int main(int argc, char **argv) {
-  size_t anim_ticks = 0;
-  const char *anim_dir = NULL;
+  anim_spec_t anim = {0};
   int c;
   const char *prog_name;
 
@@ -193,17 +210,17 @@ int main(int argc, char **argv) {
   while ((c = getopt(argc, argv, "t:d:")) != -1) {
     switch (c) {
       case 't':
-        if (anim_ticks > 0) {
+        if (anim.frame_count > 0) {
           die_usage(prog_name);
         }
-        anim_ticks = parse_ticks(optarg);
-        if (anim_ticks == 0) {
+        anim.frame_count = parse_frames(optarg);
+        if (anim.frame_count == 0) {
           die_usage(prog_name);
         }
         break;
       case 'd':
-        anim_dir = optarg;
-        if (strlen(anim_dir) == 0) {
+        anim.dir = optarg;
+        if (strlen(anim.dir) == 0) {
           die_usage(prog_name);
         }
         break;
@@ -212,15 +229,13 @@ int main(int argc, char **argv) {
     }
   }
 
-  if ((anim_ticks > 0) ^ (anim_dir != NULL)) {
+  if ((anim.frame_count > 0) ^ (anim.dir != NULL)) {
     fputs("-t and -d must be provided together.\n", stderr);
     die_usage(prog_name);
   }
 
   argv += optind;
   argc -= optind;
-
-  printf("Anim dir = \"%s\", tick count = %lu\n", anim_dir, anim_ticks);
 
   if (argc != 0) {
     die_usage(prog_name);
@@ -242,7 +257,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  run_simulation();
+  if (anim.dir) {
+    if (prepare_anim_dir(anim) < 0) {
+      return 1;
+    }
+  }
+
+  run_simulation(anim);
 
   return 0;
 }
@@ -252,7 +273,7 @@ void die_usage(const char *prog) {
   fprintf(stderr, "Usage: %s [-d <anim_dir> -t <anim_duration>]\n", prog);
   fprintf(stderr, "\n");
   fprintf(stderr, "Options:\n");
-  fprintf(stderr, "  -d <anim_dir>    Directory to save animation frames in.  It will be created if it does not exist.\n");
+  fprintf(stderr, "  -d <anim_dir>    Directory to save animation frames in.  It must not already exist.\n");
   fprintf(stderr, "  -t <num>[s|m|h]  Duration of animation.  Units are s=seconds, m=minutes, h=hours, or <omitted>=frames.\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "If either -d or -t is given, then the other must be provided as well.\n");
@@ -262,7 +283,7 @@ void die_usage(const char *prog) {
 }
 
 
-size_t parse_ticks(char *spec) {
+size_t parse_frames(char *spec) {
   char unit;
   size_t factor = 1;
   size_t count;
@@ -305,12 +326,36 @@ size_t parse_ticks(char *spec) {
 }
 
 
-void run_simulation(void) {
+int prepare_anim_dir(anim_spec_t anim) {
+  int err;
+
+  if (file_exists(anim.dir)) {
+    fprintf(stderr, "%s already exists.\n", anim.dir);
+    return -1;
+  }
+
+  if ((err = mkdir(anim.dir, 0777)) != 0) {
+    fprintf(stderr, "Couldn't create directory %s: ", anim.dir);
+    perror(NULL);
+    return -1;
+  }
+  return 0;
+}
+
+
+int file_exists(const char *path) {
+  struct stat buf;
+  return stat(path, &buf) == 0;
+}
+
+
+void run_simulation(anim_spec_t anim) {
   struct timeval start_time;
   SDL_Event event;
   size_t i;
   pthread_list_t threads;
   thread_arg_t thread_arg;
+  size_t anim_frame = 1;
 
   planet_list_t planets;
 
@@ -325,6 +370,16 @@ void run_simulation(void) {
 
     display_planets(&planets);
 
+    if (anim.dir) {
+      if (write_anim_frame(anim, anim_frame) == -1) {
+        break;
+      }
+      ++anim_frame;
+      if (anim_frame > anim.frame_count) {
+        break;
+      }
+    }
+
     for (i = 0;  i < TICKS_PER_FRAME;  ++i) {
       tick_planets(&thread_arg);
       ++thread_arg.tick;
@@ -334,7 +389,9 @@ void run_simulation(void) {
       handle_sdl_event(&event);
     }
 
-    wait_for_next_tick(&start_time);
+    if (!anim.dir) {
+      wait_for_next_tick(&start_time);
+    }
   }
 
   stop_threads(&threads, &thread_arg);
@@ -432,13 +489,8 @@ void handle_key_press_event(SDL_keysym *keysym) {
 
 int initialize_display(void) {
   int screen_width, screen_height;
-  double ratio;
 
-  screen_width = SCREEN_WIDTH_INIT;
-
-  ratio = WORLD_HEIGHT / WORLD_WIDTH;
-
-  screen_height = (int) (ratio * screen_width + 0.5);
+  screen_size(&screen_width, &screen_height);
 
   if (set_up_pixel_format() < 0) {
     return -1;
@@ -453,6 +505,15 @@ int initialize_display(void) {
   }
 
   return 0;
+}
+
+
+void screen_size(int *w, int *h) {
+  double ratio;
+
+  *w = SCREEN_WIDTH_INIT;
+  ratio = WORLD_HEIGHT / WORLD_WIDTH;
+  *h = (int) (ratio * *w + 0.5);
 }
 
 
@@ -505,7 +566,6 @@ int create_window(const char *window_name, int width, int height, int video_flag
 
 int initialize_openGL(int width, int height) {
   size_openGL_screen(width, height);
-
   return 0;
 }
 
@@ -708,6 +768,137 @@ void draw_rect(double x, double y, double w, double h) {
     glVertex2f(x+w, y+h);
     glVertex2f(x, y+h);
   glEnd();
+}
+
+
+int write_anim_frame(anim_spec_t anim, size_t frame_num) {
+  char frame_path[64];
+  int width, height;
+
+  if (anim_frame_pathname(frame_path, sizeof(frame_path), frame_num, anim) == -1) {
+    return -1;
+  }
+  screen_size(&width, &height);
+  return dump_screen_PNG(frame_path, width, height);
+}
+
+
+int anim_frame_pathname(char *dest, size_t size, size_t num, anim_spec_t anim) {
+  size_t dc;
+
+  dc = digit_count(anim.frame_count);
+  if (snprintf(dest, size, "%s/frame%0*lu.png", anim.dir, (int) dc, num) >= size) {
+    fputs("Buffer to small to store frame path name!\n", stderr);
+    return -1;
+  }
+  return 0;
+}
+
+
+int dump_screen_PNG(const char *path, int width, int height) {
+  static char *pixel_data = NULL;
+
+  if (pixel_data == NULL) {
+    pixel_data = my_malloc(3 * width * height);
+  }
+
+  glReadBuffer(GL_FRONT);
+  glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixel_data);
+
+  return write_PNG(path, pixel_data, width, height);
+}
+
+
+size_t digit_count(size_t num) {
+  size_t count = 0;
+
+  if (num == 0) {
+    return 1;
+  }
+
+  while (num > 0) {
+    ++count;
+    num /= 10;
+  }
+  return count;
+}
+
+
+int write_PNG(const char *path, char *pixels_rgb, int width, int height) {
+  /* Copied from https://www.lemoda.net/c/write-png/ */
+
+  FILE * fp;
+  png_structp png_ptr = NULL;
+  png_infop info_ptr = NULL;
+  size_t y;
+  png_byte ** row_pointers = NULL;
+  /* "status" contains the return value of this function. At first
+     it is set to a value which means 'failure'. When the routine
+     has finished its work, it is set to a value which means 'success'. */
+  int status = -1;
+
+  int pixel_size = 3;
+  int depth = 8;
+  
+  fp = fopen(path, "wb");
+  if (!fp) {
+    goto fopen_failed;
+  }
+
+  png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+  if (png_ptr == NULL) {
+    goto png_create_write_struct_failed;
+  }
+  
+  info_ptr = png_create_info_struct(png_ptr);
+  if (info_ptr == NULL) {
+    goto png_create_info_struct_failed;
+  }
+  
+  /* Set up error handling. */
+  if (setjmp (png_jmpbuf (png_ptr))) {
+      goto png_failure;
+  }
+  
+  png_set_IHDR (png_ptr,
+                info_ptr,
+                width,
+                height,
+                depth,
+                PNG_COLOR_TYPE_RGB,
+                PNG_INTERLACE_NONE,
+                PNG_COMPRESSION_TYPE_DEFAULT,
+                PNG_FILTER_TYPE_DEFAULT);
+  
+  /* Initialize rows of PNG. */
+  row_pointers = png_malloc(png_ptr, height * sizeof (png_byte *));
+  for (y = 0; y < height; y++) {
+      png_byte *row = png_malloc (png_ptr, sizeof (uint8_t) * width * pixel_size);
+      memcpy(row, pixels_rgb + y*width*pixel_size, width*pixel_size);
+      row_pointers[y] = row;
+  }
+  
+  /* Write the image data to "fp". */
+  png_init_io(png_ptr, fp);
+  png_set_rows(png_ptr, info_ptr, row_pointers);
+  png_write_png(png_ptr, info_ptr, PNG_TRANSFORM_IDENTITY, NULL);
+
+  /* The routine has successfully written the file, so we set
+     "status" to a value which indicates success. */
+  status = 0;
+  
+  for (y = 0; y < height; y++) {
+    png_free(png_ptr, row_pointers[y]);
+  }
+  png_free(png_ptr, row_pointers);
+  
+ png_failure:
+ png_create_info_struct_failed:
+  png_destroy_write_struct (&png_ptr, &info_ptr);
+ png_create_write_struct_failed:
+  fclose (fp);
+ fopen_failed:
+  return status;
 }
 
 
