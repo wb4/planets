@@ -12,12 +12,12 @@ if ! [ -d "$DIR" ]; then
   exit 1
 fi
 
-TESTFILE=$(ls "$DIR"/frame*.png 2> /dev/null | head -1)
-if ! [ -f "$TESTFILE" ]; then
+TESTFILE=$(ls "$DIR" 2> /dev/null | head -1)
+if ! [ -f "$DIR/$TESTFILE" ]; then
   echo No frames in \""$DIR\"".
   exit 1
 fi
-DIGITS=$(expr ${#TESTFILE} - ${#DIR} - 10)
+DIGITS=$(expr ${#TESTFILE} - 9)
 
 ENCODERS=(ffmpeg avconv)
 

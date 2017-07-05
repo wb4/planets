@@ -47,9 +47,10 @@
 
 #define PLANET_DENSITY 0.03
 
-#define WORLD_SCALE 0.75
-#define WORLD_WIDTH (3277.0 * WORLD_SCALE)
-#define WORLD_HEIGHT (2048.0 * WORLD_SCALE)
+#define WORLD_ASPECT_RATIO (16.0 / 9.0)
+
+#define WORLD_WIDTH 2458.0
+#define WORLD_HEIGHT (WORLD_WIDTH / WORLD_ASPECT_RATIO)
 
 #define FRAMES_PER_SECOND 60
 #define TICKS_PER_FRAME 5
@@ -62,7 +63,7 @@
 
 /* Stuff dealing with display. */
 
-#define SCREEN_WIDTH_INIT 1680  /* initial screen height is calculated from this and the world dimensions */
+#define SCREEN_HEIGHT_INIT 1080  /* initial screen width is calculated from this and the world aspect ratio */
 #define SCREEN_DEPTH 24 /* color depth */
 
 #define CIRCLE_POLY_COUNT 10
@@ -509,11 +510,8 @@ int initialize_display(void) {
 
 
 void screen_size(int *w, int *h) {
-  double ratio;
-
-  *w = SCREEN_WIDTH_INIT;
-  ratio = WORLD_HEIGHT / WORLD_WIDTH;
-  *h = (int) (ratio * *w + 0.5);
+  *h = SCREEN_HEIGHT_INIT;
+  *w = (int) (WORLD_ASPECT_RATIO * *h + 0.5);
 }
 
 
