@@ -1,7 +1,6 @@
 #include <GL/gl.h>
 #include <GL/glu.h>
 #include <png.h>
-#include <zlib.h>
 #include "SDL.h"
 
 #include <errno.h>
