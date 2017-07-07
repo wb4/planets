@@ -1,4 +1,3 @@
-
 #include <GL/gl.h>
 #include <GL/glu.h>
 #include <png.h>
@@ -20,9 +19,6 @@
 #include <sys/sysinfo.h>
 #include <sys/time.h>
 #include <sys/types.h>
-
-
-/* #define USE_PLANET_MUTEX */
 
 
 #define G 50000.0  /* gravitation constant */
@@ -57,16 +53,12 @@
 
 #define COLLISION_ITERATION_MAX 30
 
-
-#define rand_normal() (rand() / (RAND_MAX + 1.0))
-
-
-/* Stuff dealing with display. */
-
 #define SCREEN_HEIGHT_INIT 1080  /* initial screen width is calculated from this and the world aspect ratio */
 #define SCREEN_DEPTH 24 /* color depth */
 
 #define CIRCLE_POLY_COUNT 10
+
+#define rand_normal() (rand() / (RAND_MAX + 1.0))
 
 int video_flags = 0;
 
@@ -91,10 +83,6 @@ typedef struct planet {
   size_t hue_tick;
 
   size_t collision_list;
-
-#ifdef USE_PLANET_MUTEX
-  pthread_mutex_t mutex;
-#endif
 } planet_t;
 
 
@@ -143,10 +131,10 @@ int set_up_pixel_format(void);
 int create_window(const char *window_name, int width, int height, int video_flags);
 int initialize_openGL(int width, int height);
 void size_openGL_screen(int width, int height);
-void run_simulation(anim_spec_t anim);
-void start_threads(pthread_list_t *threads, thread_arg_t *arg);
+int run_simulation(anim_spec_t anim);
+int start_threads(pthread_list_t *threads, thread_arg_t *arg);
 void stop_threads(pthread_list_t *threads, thread_arg_t *arg);
-void pthread_list_init(pthread_list_t *list, size_t size);
+int pthread_list_init(pthread_list_t *list, size_t size);
 void pthread_list_delete(pthread_list_t *list);
 void *t_planet_ticker(void *void_arg);
 int handle_sdl_event(SDL_Event *event);
@@ -158,7 +146,6 @@ void color_planet(planet_t *planet);
 void hue_to_rgb(double hue, double *r, double *g, double *b);
 void scale_color(double brightness, double *r, double *g, double *b);
 void draw_circle(double cx, double cy, double radius);
-void draw_rect(double x, double y, double w, double h);
 int write_anim_frame(anim_spec_t anim, size_t frame_num);
 int anim_frame_pathname(char *dest, size_t size, size_t num, anim_spec_t anim);
 int dump_screen_PNG(const char *path, int width, int height);
@@ -183,8 +170,6 @@ double mod_double(double value, double min, double max);
 void wait_for_next_tick(struct timeval *start);
 planet_t *planet_new(double x_pos, double y_pos, double x_vel, double y_vel, double mass, double hue, size_t tick);
 void planet_init(planet_t *planet, double x_pos, double y_pos, double x_vel, double y_vel, double mass, double hue, size_t tick);
-void planet_reinit(planet_t *planet, double x_pos, double y_pos, double x_vel, double y_vel, double mass, double hue, size_t tick);
-void planet_delete(planet_t *planet);
 void planet_add_force(planet_t *planet, double x_force, double y_force);
 double radius_for_mass(double mass);
 void list_init(planet_list_t *list);
@@ -220,6 +205,9 @@ int main(int argc, char **argv) {
         }
         break;
       case 'd':
+        if (anim.dir != NULL) {
+          die_usage(prog_name);
+        }
         anim.dir = optarg;
         if (strlen(anim.dir) == 0) {
           die_usage(prog_name);
@@ -264,9 +252,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  run_simulation(anim);
-
-  return 0;
+  return run_simulation(anim) == 0 ? 0 : 1;
 }
 
 
@@ -350,21 +336,21 @@ int file_exists(const char *path) {
 }
 
 
-void run_simulation(anim_spec_t anim) {
+int run_simulation(anim_spec_t anim) {
   struct timeval start_time;
   SDL_Event event;
   size_t i;
   pthread_list_t threads;
   thread_arg_t thread_arg;
   size_t anim_frame = 1;
-
   planet_list_t planets;
 
   initialize_planets(&planets);
 
   thread_arg_init(&thread_arg, &planets);
-
-  start_threads(&threads, &thread_arg);
+  if (start_threads(&threads, &thread_arg) < 0) {
+    return -1;
+  }
 
   for (thread_arg.tick = 0;  !quitting;  ) {
     gettimeofday(&start_time, NULL);
@@ -396,22 +382,26 @@ void run_simulation(anim_spec_t anim) {
   }
 
   stop_threads(&threads, &thread_arg);
+
+  return 0;
 }
 
 
-void start_threads(pthread_list_t *threads, thread_arg_t *arg) {
+int start_threads(pthread_list_t *threads, thread_arg_t *arg) {
   size_t thread_count;
   size_t i;
 
   thread_count = (size_t) get_nprocs();
-
-  pthread_list_init(threads, thread_count);
-
+  if (pthread_list_init(threads, thread_count) < 0) {
+    return -1;
+  }
   arg->running = 1;
 
   for (i = 0;  i < thread_count;  ++i) {
     pthread_create(&threads->array[i], 0, t_planet_ticker, arg);
   }
+
+  return 0;
 }
 
 
@@ -428,9 +418,14 @@ void stop_threads(pthread_list_t *threads, thread_arg_t *arg) {
 }
 
 
-void pthread_list_init(pthread_list_t *list, size_t size) {
+int pthread_list_init(pthread_list_t *list, size_t size) {
   list->array = calloc(size, sizeof(list->array[0]));
+  if (list->array == NULL) {
+    perror("calloc()");
+    return -1;
+  }
   list->size = size;
+  return 0;
 }
 
 
@@ -555,9 +550,7 @@ int create_window(const char *window_name, int width, int height, int video_flag
     fprintf(stderr, "Failed to create window: %s", SDL_GetError());
     return -1;
   }
-
   SDL_WM_SetCaption(window_name, window_name);
-
   return 0;
 }
 
@@ -571,6 +564,7 @@ int initialize_openGL(int width, int height) {
 void size_openGL_screen(int width, int height) {
   const float world_aspect = (float) (WORLD_WIDTH / WORLD_HEIGHT);
   float screen_aspect;
+  float xscale, yscale;
 
   if ( height == 0 ) {
     height = 1;
@@ -584,10 +578,13 @@ void size_openGL_screen(int width, int height) {
   glLoadIdentity();
 
   if (screen_aspect > world_aspect) {
-    glScalef(2.0f/(WORLD_HEIGHT*screen_aspect), 2.0f/WORLD_HEIGHT, 1.0f);
+    xscale = 2.0f/(WORLD_HEIGHT*screen_aspect);
+    yscale = 2.0f/WORLD_HEIGHT;
   } else {
-    glScalef (2.0f/WORLD_WIDTH, 2.0f/(WORLD_WIDTH/screen_aspect), 1.0f);
+    xscale = 2.0f/WORLD_WIDTH;
+    yscale = 2.0f/(WORLD_WIDTH/screen_aspect);
   }
+  glScalef(xscale, yscale, 1.0f);
   glTranslatef(-WORLD_WIDTH/2.0f, -WORLD_HEIGHT/2.0f, 0.0f);
 }
 
@@ -679,7 +676,6 @@ void color_planet(planet_t *planet) {
   }
 
   hue_to_rgb(planet->hue, &r, &g, &b);
-
   scale_color(value, &r, &g, &b);
 
   glColor3f((float) r, (float) g, (float) b);
@@ -759,16 +755,6 @@ void draw_circle(double cx, double cy, double radius) {
 }
 
 
-void draw_rect(double x, double y, double w, double h) {
-  glBegin(GL_QUADS);
-    glVertex2f(x, y);
-    glVertex2f(x+w, y);
-    glVertex2f(x+w, y+h);
-    glVertex2f(x, y+h);
-  glEnd();
-}
-
-
 int write_anim_frame(anim_spec_t anim, size_t frame_num) {
   char frame_path[64];
   int width, height;
@@ -823,7 +809,7 @@ size_t digit_count(size_t num) {
 
 
 int write_PNG(const char *path, char *pixels_rgb, int width, int height) {
-  /* Copied from https://www.lemoda.net/c/write-png/ */
+  /* Adapted from https://www.lemoda.net/c/write-png/ */
 
   FILE * fp;
   png_structp png_ptr = NULL;
@@ -873,7 +859,7 @@ int write_PNG(const char *path, char *pixels_rgb, int width, int height) {
   for (y = 0; y < height; y++) {
       png_byte *row = png_malloc (png_ptr, sizeof (uint8_t) * width * pixel_size);
       memcpy(row, pixels_rgb + y*width*pixel_size, width*pixel_size);
-      row_pointers[y] = row;
+      row_pointers[height - 1 - y] = row;
   }
   
   /* Write the image data to "fp". */
@@ -915,14 +901,12 @@ void resolve_collisions(planet_list_t *planets, size_t tick) {
   size_t col_it;
 
   list_init(&new_planets);
-
   memset(collision_lists, 0, sizeof(collision_lists));
 
   for (col_it = 0;  col_it < COLLISION_ITERATION_MAX;  ++col_it) {
     collision_count = 0;
 
     find_collision_groups(planets, &new_planets, collision_lists, &collision_count);
-
     list_delete(&new_planets);
 
     for (i = 0;  i < collision_count;  ++i) {
@@ -953,12 +937,6 @@ void resolve_collision_group(planet_list_t *planets, planet_list_t *collision, p
 
   double x_pos, y_pos;
   double x_vel, y_vel;
-
-/*
-  double x_pos_diff, y_pos_diff;
-  double x_vel_diff, y_vel_diff;
-  double speed_proj;
-*/
 
   double first_x, first_y;
 
@@ -1014,26 +992,12 @@ void resolve_collision_group(planet_list_t *planets, planet_list_t *collision, p
   x_vel = total_x_vel / total_mass;
   y_vel = total_y_vel / total_mass;
 
-/*
-  for (node = collision->first;  node;  node = node->next) {
-    planet = node->planet;
-
-    x_pos_diff = planet->x_pos - x_pos;
-    y_pos_diff = planet->y_pos - y_pos;
-
-    x_vel_diff = planet->x_vel - x_vel;
-    y_vel_diff = planet->y_vel - y_vel;
-
-    speed_proj = x_pos_diff * y_vel_diff - y_pos_diff * x_vel_diff;
-  }
-*/
-
   planet = list_remove_first(collision);
 
   list_remove_all(planets, collision);
   delete_planets(collision);
 
-  planet_reinit(planet, x_pos, y_pos, x_vel, y_vel, total_mass, hue, hue_tick);
+  planet_init(planet, x_pos, y_pos, x_vel, y_vel, total_mass, hue, hue_tick);
 
   if (total_mass > MASS_MAX) {
     /* It's too big!  We have to break it up. */
@@ -1092,16 +1056,6 @@ void split_planet(planet_list_t *planets, planet_t *planet, planet_list_t *new_p
   child_hue = planet->hue;
   child_hue_tick = planet->hue_tick;
 
-/*
-  for (;;) {
-    child_mass = planet->mass / child_count;
-    if (child_mass <= MASS_MAX) {
-      break;
-    }
-    ++child_count;
-  }
-*/
-
   angle_diff = 2 * M_PI / child_count;
   angle = 2 * M_PI * rand_normal();
 
@@ -1142,7 +1096,7 @@ void split_planet(planet_list_t *planets, planet_t *planet, planet_list_t *new_p
     }
 
     if (!i) {
-      planet_reinit(planet, child_x_pos, child_y_pos, child_x_vel, child_y_vel, child_mass, this_child_hue, this_child_hue_tick);
+      planet_init(planet, child_x_pos, child_y_pos, child_x_vel, child_y_vel, child_mass, this_child_hue, this_child_hue_tick);
     } else {
       planet = planet_new(child_x_pos, child_y_pos, child_x_vel, child_y_vel, child_mass, this_child_hue, this_child_hue_tick);
       list_add(planets, planet);
@@ -1410,7 +1364,6 @@ planet_t *planet_new(double x_pos, double y_pos, double x_vel, double y_vel, dou
   planet_t *planet;
 
   planet = my_malloc(sizeof(*planet));
-
   planet_init(planet, x_pos, y_pos, x_vel, y_vel, mass, hue, tick);
 
   return planet;
@@ -1434,35 +1387,12 @@ void planet_init(planet_t *planet, double x_pos, double y_pos, double x_vel, dou
   planet->hue_tick = tick;
 
   planet->collision_list = PLANET_COUNT_MAX;
-
-#ifdef USE_PLANET_MUTEX
-  pthread_mutex_init(&planet->mutex, 0);
-#endif
-}
-
-
-void planet_reinit(planet_t *planet, double x_pos, double y_pos, double x_vel, double y_vel, double mass, double hue, size_t tick) {
-  planet_delete(planet);
-  planet_init(planet, x_pos, y_pos, x_vel, y_vel, mass, hue, tick);
-}
-
-
-void planet_delete(planet_t *planet) {
-#ifdef USE_PLANET_MUTEX
-  pthread_mutex_destroy(&planet->mutex);
-#endif
 }
 
 
 void planet_add_force(planet_t *planet, double x_force, double y_force) {
-#ifdef USE_PLANET_MUTEX
-  pthread_mutex_lock(&planet->mutex);
-#endif
-    planet->x_force += x_force;
-    planet->y_force += y_force;
-#ifdef USE_PLANET_MUTEX
-  pthread_mutex_unlock(&planet->mutex);
-#endif
+  planet->x_force += x_force;
+  planet->y_force += y_force;
 }
 
 
